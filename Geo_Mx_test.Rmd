@@ -1,0 +1,75 @@
+---
+title: "Geo_Mx_test.Rmd"
+output: html_document
+date: "2022-09-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r}
+# data from the geomx website from this vignette:
+# https://bioc.ism.ac.jp/packages/3.14/workflows/vignettes/GeoMxWorkflows/inst/doc/GeomxTools_RNA-NGS_Analysis.html
+#install.packages("devtools")
+#devtools::install_github("Nanostring-Biostats/NanoStringNCTools")
+#devtools::install_github("Nanostring-Biostats/GeomxTools", ref = "dev")
+#devtools::install_github("Nanostring-Biostats/GeoMxWorkflows", ref = "main")
+library(NanoStringNCTools)
+library(GeomxTools)
+library(GeoMxWorkflows)
+datadir <- "/home/alisa/spatial_transcriptomics/example_geomx/Kidney_Dataset"
+DCCFiles <- dir(file.path(datadir, "dccs"), pattern = ".dcc$",
+                full.names = TRUE, recursive = TRUE)
+PKCFiles <- dir(file.path(datadir, "pkcs"), pattern = ".pkc$",
+                full.names = TRUE, recursive = TRUE)
+SampleAnnotationFile <-
+    dir(file.path(datadir, "annotation"), pattern = ".xlsx$",
+        full.names = TRUE, recursive = TRUE)
+
+demoData <-
+    readNanoStringGeoMxSet(dccFiles = DCCFiles,
+                           pkcFiles = PKCFiles,
+                           phenoDataFile = SampleAnnotationFile,
+                           phenoDataSheet = "Template",
+                           phenoDataDccColName = "Sample_ID",
+                           protocolDataColNames = c("aoi", "roi"),
+                           experimentDataColNames = c("panel"))
+
+
+# using Vignette
+#https://bioconductor.org/packages/devel/bioc/vignettes/GeomxTools/inst/doc/GeomxSet_coercions.html
+# to attempt coersion into Seurat object
+
+demoData <- shiftCountsOne(demoData, useDALogic=TRUE)
+demoData <- setSegmentQCFlags(demoData, qcCutoffs = list(percentSaturation = 45))
+demoData <- setBioProbeQCFlags(demoData)
+
+# low sequenced ROIs
+lowSaturation <- which(protocolData(demoData)[["QCFlags"]]$LowSaturation)
+# probes that are considered outliers 
+lowQCprobes <- which(featureData(demoData)[["QCFlags"]]$LowProbeRatio | 
+                       featureData(demoData)[["QCFlags"]]$GlobalGrubbsOutlier)
+# remove low quality ROIs and probes
+passedQC <- demoData[-lowQCprobes, -lowSaturation]
+
+dim(passedQC)
+featureType(passedQC)
+target_demoData <- aggregateCounts(passedQC)
+data.frame(assayData(target_demoData)[["exprs"]][seq_len(3), seq_len(3)])
+
+norm_target_demoData <- normalize(target_demoData, norm_method="quant",
+                                  desiredQuantile = .75, toElt = "q_norm")
+
+assayDataElementNames(norm_target_demoData)
+
+# this is the coersion line
+demoSeurat <- as.Seurat(norm_target_demoData, normData = "q_norm")
+
+
+
+```
+
+
+

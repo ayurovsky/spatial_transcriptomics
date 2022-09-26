@@ -1,0 +1,177 @@
+---
+title: "Seurat_vignette.Rmd"
+output: html_document
+date: "2022-09-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#TODO:
+#1. Test with a different 10x Dataset - make sure can read in, no problems
+#Done - need the feature_bc_matrix.h5 and spatial directory - output
+#2. find geomX (nanostring) Dataset, and tutorials...
+#3. assume that we have x,y positions that give "cluster membership" yellow, green, etc;  figure out how to shove those positions into the Seurat object
+#4. software to separate images into clusters for each spot
+#5. how to run NMF on each spot to get tissue breakdown
+```
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(Seurat)
+#devtools::install_github('satijalab/seurat-data')
+library(SeuratData)
+library(ggplot2)
+library(patchwork)
+library(dplyr)
+```
+
+
+```{r}
+# how to get the data from the library
+#InstallData("stxBrain")
+#brain <- LoadData("stxBrain", type = "anterior1")
+```
+
+
+```{r}
+# now try to load data directly
+# install.packages("hdf5r")
+library(hdf5r)
+brain_new <- Load10X_Spatial("/home/alisa/spatial_transcriptomics/example_10x",filename = "V1_Mouse_Brain_Sagittal_Anterior_filtered_feature_bc_matrix.h5", assay = "Spatial",
+  slice = "anterior1")
+
+
+```
+
+## Including Plots
+
+```{r plots, echo=FALSE}
+plot1 <- VlnPlot(brain_new, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialFeaturePlot(brain_new, features = "nCount_Spatial") + theme(legend.position = "right")
+plot3 <- VlnPlot(brain_new, features = "nFeature_Spatial", pt.size = 0.1) + NoLegend()
+plot4 <- SpatialFeaturePlot(brain_new, features = "nFeature_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2, plot3, plot4)
+
+# instead of the log-normalization, uses the Negative Binomial counts model
+brain_new <- SCTransform(brain_new, assay = "Spatial", verbose = FALSE)
+
+
+# do below to compare to the log-normalization
+
+# we calculate the correlation of each feature (gene) with the number of UMIs (the nCount_Spatial variable here). We then place genes into groups based on their mean expression, and generate boxplots of these correlations. You can see that log-normalization fails to adequately normalize genes in the first three groups, suggesting that technical factors continue to influence normalized expression estimates for highly expressed genes (for Log normalize, not shown). In contrast, sctransform normalization substantially mitigates this effect.
+
+brain_new <- GroupCorrelation(brain_new, group.assay = "Spatial", assay = "SCT", slot = "scale.data", do.plot = FALSE)
+GroupCorrelationPlot(brain_new, assay = "SCT", cor = "nCount_Spatial_cor") + ggtitle("SCTransform Normalization") +
+    theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+```{r}
+# see individual genes
+SpatialFeaturePlot(brain_new, features = c("Hpca", "Ttr"))
+SpatialFeaturePlot(brain_new, features = c("Xkr4", "Trp53"))
+# see more histology
+SpatialFeaturePlot(brain_new, features = c("Xkr4", "Trp53"), alpha = c(0.1, 0.2))
+
+```
+
+```{r}
+TODO:!!!!!
+look at this tutorial on how to filter out mitochondrial and other genes you don't want!!!
+https://nbisweden.github.io/workshop-scRNAseq/labs/compiled/seurat/seurat_07_spatial.html
+```
+
+```{r}
+
+# run the PCA - this will automaticlally use the scale.data slot!!!
+brain_new <- RunPCA(brain_new, assay = "SCT", verbose = FALSE)
+
+# top 30 PCs, k=20
+# where is it stored?  @graphs$SCT_snn?
+brain_new <- FindNeighbors(brain_new, reduction = "pca", dims = 1:30)
+
+# default resolution = 0.8 -> 14 clusters (use this for further)
+#resolution = 2 -> 26 clusters
+# resolution = 0.4 -> 10 clusters
+brain_new <- FindClusters(brain_new, verbose = FALSE)
+# cluster identities placed into brain@meta.data$seurat_clusters
+brain_new <- RunUMAP(brain_new, reduction = "pca", dims = 1:30) # get 2D #
+
+# !!!!! can add new vectors to meta data and specify them to be identity
+#brain_new@meta.data$alisa_clusters <- factor(c(rep(0,1000),rep(1,1696)))
+# use values from dummy code in the cell below
+brain_new@meta.data$alisa_clusters <- test_assign
+Idents(brain_new) <- "alisa_clusters"
+
+
+
+p1 <- DimPlot(brain_new, reduction = "umap", label = TRUE)
+p2 <- SpatialDimPlot(brain_new, label = TRUE, label.size = 3)
+wrap_plots(p1,p2)
+
+# can color voxels by identity (cluster membership)
+SpatialDimPlot(brain_new, cells.highlight = CellsByIdentities(object = brain_new, idents = c(2, 1)), facet.highlight = TRUE, ncol = 1)
+
+
+# get differential expression between clusters 0 and 1 - returns about 4K genes
+# uses @data slot
+de_markers <- FindMarkers(brain_new, ident.1 = 0, ident.2 = 1)
+# de_markers gives us a list of top DE genes between these two clusters
+SpatialFeaturePlot(object = brain_new, features = rownames(de_markers)[1:3], alpha = c(0.1, 1), ncol = 3)
+
+# instead of looking at DE between pairs of clusters, use the below method to find top genes
+# who's expression correlates with their spatial location
+brain <- FindSpatiallyVariableFeatures(brain, assay = "SCT", features = VariableFeatures(brain)[1:1000],
+    selection.method = "markvariogram")
+top.features <- head(SpatiallyVariableFeatures(brain, selection.method = "markvariogram"), 6)
+SpatialFeaturePlot(brain, features = top.features, ncol = 3, alpha = c(0.1, 1))
+```
+
+```{r}
+ # to change the cluster membership:
+# the physical location of the spots is in brain_new@images$anterior1@coordinates
+# the result of automatic clustering is in brain@meta.data$seurat_clusters - change using the Idents function
+#min(brain_new@images$anterior1@coordinates$row) = 10
+#max(brain_new@images$anterior1@coordinates$row) = 75
+
+#min(brain_new@images$anterior1@coordinates$col) = 0
+#max(brain_new@images$anterior1@coordinates$col) = 117
+
+# do a dummy assignment into four quadrants
+test_assign <- rep(0,2696)
+for (i in 1:length(test_assign)) {
+  line <- brain_new@images$anterior1@coordinates[i,]
+  if (line$row > 42) {
+    if (line$col < 68) {
+      test_assign[i] <- 2
+    } else {
+      test_assign[i] <- 3
+    }
+  } else {
+    if (line$col >= 68) {
+      test_assign[i] <- 1
+    }
+  }
+}
+test_assign <- factor(test_assign)
+```
+
+```{r}
+# now, let's try to get a tiny subset - just cluster 0
+brain_subset_upper_left <- subset(brain_new, idents = c(0))
+plot1 <- VlnPlot(brain_subset_upper_left, features = "nCount_Spatial", pt.size = 0.1) + NoLegend()
+plot2 <- SpatialFeaturePlot(brain_subset_upper_left, features = "nCount_Spatial") + theme(legend.position = "right")
+wrap_plots(plot1, plot2)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
